@@ -21,6 +21,7 @@
 
 namespace Test;
 
+use OC\Helper\LocaleHelper;
 use OC\Settings\Controller\SettingsPageController;
 use OC\Settings\Panels\Personal\Profile;
 use OC\Settings\Section;
@@ -94,7 +95,10 @@ class SettingsPageControllerTest extends TestCase {
 					$this->config,
 					$this->groupManager,
 					$this->userSession,
-					$this->lfactory));
+					$this->lfactory,
+					new LocaleHelper()
+				)
+			);
 		$response = $this->pageController->getPersonal('general');
 		$this->assertArrayHasKey('personalNav', $response->getParams());
 		$this->assertArrayHasKey('adminNav', $response->getParams());
@@ -134,7 +138,10 @@ class SettingsPageControllerTest extends TestCase {
 					$this->config,
 					$this->groupManager,
 					$this->userSession,
-					$this->lfactory));
+					$this->lfactory,
+					new LocaleHelper()
+				)
+			);
 		$response = $this->pageController->getPersonal('general');
 		$this->assertArrayHasKey('personalNav', $response->getParams());
 		$this->assertArrayHasKey('adminNav', $response->getParams());
