@@ -27,21 +27,21 @@
 namespace OCA\FederatedFileSharing;
 
 use OC\OCS\Result;
-use OCA\FederatedFileSharing\Exception;
-use OCA\Files_Sharing\Activity;
+use OCA\FederatedFileSharing\Exception\InvalidShareException;
+use OCA\FederatedFileSharing\Exception\NotSupportedException;
+use OCP\App\IAppManager;
 use OCP\AppFramework\Http;
 use OCP\Constants;
 use OCP\IDBConnection;
 use OCP\IRequest;
+use OCP\IUserManager;
 use OCP\Share;
 use OCP\Share\IShare;
-use Symfony\Component\EventDispatcher\EventDispatcherInterface;
-use Symfony\Component\EventDispatcher\GenericEvent;
 
 /**
  * Class RequestHandler
  *
- * handles OCS Request to the federated share API
+ * Handles OCS Request to the federated share API
  *
  * @package OCA\FederatedFileSharing\API
  */
@@ -53,8 +53,11 @@ class RequestHandler {
 	/** @var IDBConnection */
 	private $connection;
 
-	/** @var Share\IManager */
-	private $shareManager;
+	/** @var IAppManager */
+	private $appManager;
+
+	/** @var IUserManager */
+	private $userManager;
 
 	/** @var IRequest */
 	private $request;
@@ -68,69 +71,70 @@ class RequestHandler {
 	/** @var  FedShareManager */
 	private $fedShareManager;
 
-	/** @var EventDispatcherInterface  */
-	private $eventDispatcher;
-
-	/** @var string */
-	private $shareTable = 'share';
-
 	/**
 	 * Server2Server constructor.
 	 *
 	 * @param FederatedShareProvider $federatedShareProvider
 	 * @param IDBConnection $connection
-	 * @param Share\IManager $shareManager
+	 * @param IAppManager $appManager
 	 * @param IRequest $request
 	 * @param Notifications $notifications
 	 * @param AddressHandler $addressHandler
 	 * @param FedShareManager $fedShareManager
-	 * @param EventDispatcherInterface $eventDispatcher
 	 */
 	public function __construct(FederatedShareProvider $federatedShareProvider,
 								IDBConnection $connection,
-								Share\IManager $shareManager,
+								IAppManager $appManager,
+								IUserManager $userManager,
 								IRequest $request,
 								Notifications $notifications,
 								AddressHandler $addressHandler,
-								FedShareManager $fedShareManager,
-								EventDispatcherInterface $eventDispatcher
+								FedShareManager $fedShareManager
 	) {
 		$this->federatedShareProvider = $federatedShareProvider;
 		$this->connection = $connection;
-		$this->shareManager = $shareManager;
+		$this->appManager = $appManager;
+		$this->userManager = $userManager;
 		$this->request = $request;
 		$this->notifications = $notifications;
 		$this->addressHandler = $addressHandler;
 		$this->fedShareManager = $fedShareManager;
-		$this->eventDispatcher = $eventDispatcher;
 	}
 
 	/**
-	 * create a new share
+	 * Create a new incoming share
 	 *
 	 * @param array $params
+	 *
 	 * @return Result
 	 */
 	public function createShare($params) {
 		try {
 			$this->assertIncomingSharingEnabled();
 
-			$remote = isset($_POST['remote']) ? $_POST['remote'] : null;
-			$token = isset($_POST['token']) ? $_POST['token'] : null;
-			$name = isset($_POST['name']) ? $_POST['name'] : null;
-			$owner = isset($_POST['owner']) ? $_POST['owner'] : null;
-			$sharedBy = isset($_POST['sharedBy']) ? $_POST['sharedBy'] : null;
-			$shareWith = isset($_POST['shareWith']) ? $_POST['shareWith'] : null;
-			$remoteId = isset($_POST['remoteId']) ? (int)$_POST['remoteId'] : null;
-			$sharedByFederatedId = isset($_POST['sharedByFederatedId']) ? $_POST['sharedByFederatedId'] : null;
-			$ownerFederatedId = isset($_POST['ownerFederatedId']) ? $_POST['ownerFederatedId'] : null;
+			$remote = $this->request->getParam('remote', null);
+			$token = $this->request->getParam('token', null);
+			$name = $this->request->getParam('name', null);
+			$owner = $this->request->getParam('owner', null);
+			$sharedBy = $this->request->getParam('sharedBy', null);
+			$shareWith = $this->request->getParam('shareWith', null);
+			$remoteId = $this->request->getParam('remoteId', null);
+			$sharedByFederatedId = $this->request->getParam(
+				'sharedByFederatedId',
+				null
+			);
+			$ownerFederatedId = $this->request->getParam('ownerFederatedId', null);
 
 			if ($this->hasNull([$remote, $token, $name, $owner, $remoteId, $shareWith])) {
-				return new Result(null, 400, 'server can not add remote share, missing parameter');
+				throw new InvalidShareException(
+					'server can not add remote share, missing parameter'
+				);
 			}
 
 			if (!\OCP\Util::isValidFileName($name)) {
-				return new Result(null, 400, 'The mountpoint name contains invalid characters.');
+				throw new InvalidShareException(
+					'The mountpoint name contains invalid characters.'
+				);
 			}
 
 			// FIXME this should be a method in the user management instead
@@ -142,89 +146,53 @@ class RequestHandler {
 			);
 			\OCP\Util::writeLog('files_sharing', 'shareWith after, ' . $shareWith, \OCP\Util::DEBUG);
 
-			if (!\OCP\User::userExists($shareWith)) {
-				return new Result(null, 400, 'User does not exist');
+			if (!$this->userManager->userExists($shareWith)) {
+				throw new InvalidShareException('User does not exist');
 			}
 
-			\OC_Util::setupFS($shareWith);
-
-			$discoveryManager = new DiscoveryManager(
-				\OC::$server->getMemCacheFactory(),
-				\OC::$server->getHTTPClientService()
+			$this->fedShareManager->createShare(
+				$shareWith,
+				$remote,
+				$remoteId,
+				$owner,
+				$name,
+				$ownerFederatedId,
+				$sharedByFederatedId,
+				$sharedBy,
+				$token
 			);
-			$externalManager = new \OCA\Files_Sharing\External\Manager(
-				\OC::$server->getDatabaseConnection(),
-				\OC\Files\Filesystem::getMountManager(),
-				\OC\Files\Filesystem::getLoader(),
-				\OC::$server->getNotificationManager(),
-				\OC::$server->getEventDispatcher(),
-				$shareWith
-			);
-
-			$externalManager->addShare($remote, $token, '', $name, $owner, false, $shareWith, $remoteId);
-			$shareId = \OC::$server->getDatabaseConnection()->lastInsertId('*PREFIX*share_external');
-			if ($ownerFederatedId === null) {
-				$ownerFederatedId = $owner . '@' . $this->cleanupRemote($remote);
-			}
-			// if the owner of the share and the initiator are the same user
-			// we also complete the federated share ID for the initiator
-			if ($sharedByFederatedId === null && $owner === $sharedBy) {
-				$sharedByFederatedId = $ownerFederatedId;
-			}
-
-			$event = new GenericEvent(
+		} catch (InvalidShareException $e) {
+			return new Result(
 				null,
-				[
-					'name' => $name,
-					'targetuser' => $sharedByFederatedId,
-					'owner' => $owner,
-					'sharewith' => $shareWith,
-					'sharedby' => $sharedBy,
-					'remoteid' => $remoteId
-				]
+				Http::STATUS_BAD_REQUEST,
+				$e->getMessage()
 			);
-			$this->eventDispatcher->dispatch('\OCA\FederatedFileSharing::remote_shareReceived', $event);
-			\OC::$server->getActivityManager()->publishActivity(
-				Activity::FILES_SHARING_APP, Activity::SUBJECT_REMOTE_SHARE_RECEIVED, [$ownerFederatedId, \trim($name, '/')], '', [],
-				'', '', $shareWith, Activity::TYPE_REMOTE_SHARE, Activity::PRIORITY_LOW
+		} catch (NotSupportedException $e) {
+			return new Result(
+				null,
+				Http::STATUS_SERVICE_UNAVAILABLE,
+				'Server does not support federated cloud sharing'
 			);
-
-			$urlGenerator = \OC::$server->getURLGenerator();
-
-			$notificationManager = \OC::$server->getNotificationManager();
-			$notification = $notificationManager->createNotification();
-			$notification->setApp('files_sharing')
-				->setUser($shareWith)
-				->setDateTime(new \DateTime())
-				->setObject('remote_share', $shareId)
-				->setSubject('remote_share', [$ownerFederatedId, $sharedByFederatedId, \trim($name, '/')])
-				->setMessage('remote_share', [$ownerFederatedId, $sharedByFederatedId, \trim($name, '/')]);
-
-			$declineAction = $notification->createAction();
-			$declineAction->setLabel('decline')
-				->setLink($urlGenerator->getAbsoluteURL($urlGenerator->linkTo('', 'ocs/v1.php/apps/files_sharing/api/v1/remote_shares/pending/' . $shareId)), 'DELETE');
-			$notification->addAction($declineAction);
-
-			$acceptAction = $notification->createAction();
-			$acceptAction->setLabel('accept')
-				->setLink($urlGenerator->getAbsoluteURL($urlGenerator->linkTo('', 'ocs/v1.php/apps/files_sharing/api/v1/remote_shares/pending/' . $shareId)), 'POST');
-			$notification->addAction($acceptAction);
-
-			$notificationManager->notify($notification);
-		} catch (Exception\NotSupportedException $e) {
-			return new Result(null, 503, 'Server does not support federated cloud sharing');
 		} catch (\Exception $e) {
-			\OCP\Util::writeLog('files_sharing', 'server can not add remote share, ' . $e->getMessage(), \OCP\Util::ERROR);
-			return new Result(null, 500, 'internal server error, was not able to add share from ' . $remote);
+			\OCP\Util::writeLog(
+				'files_sharing',
+				'server can not add remote share, ' . $e->getMessage(),
+				\OCP\Util::ERROR
+			);
+			return new Result(
+				null,
+				Http::STATUS_INTERNAL_SERVER_ERROR,
+				'internal server error, was not able to add share from ' . $remote
+			);
 		}
 
 		return new Result();
 	}
 
 	/**
-	 * create re-share on behalf of another user
+	 * Create re-share on behalf of another user
 	 *
-	 * @param $params
+	 * @param array $params
 	 *
 	 * @return Result
 	 */
@@ -232,14 +200,15 @@ class RequestHandler {
 		$id = isset($params['id']) ? (int)$params['id'] : null;
 		$token = $this->request->getParam('token', null);
 		$shareWith = $this->request->getParam('shareWith', null);
-		$permission = (int)$this->request->getParam('permission', null);
-		$remoteId = (int)$this->request->getParam('remoteId', null);
-
-		if ($this->hasNull([$id, $token, $shareWith, $permission, $remoteId])) {
-			return new Result(null, Http::STATUS_BAD_REQUEST);
-		}
+		$permission = $this->request->getParam('permission', null);
+		$remoteId = $this->request->getParam('remoteId', null);
 
 		try {
+			if ($this->hasNull([$id, $token, $shareWith, $permission, $remoteId])) {
+				throw new \Exception();
+			}
+			$permission = (int) $permission;
+			$remoteId = (int) $remoteId;
 			$share = $this->getValidShare($id);
 
 			// don't allow to share a file back to the owner
@@ -247,33 +216,37 @@ class RequestHandler {
 			$owner = $share->getShareOwner();
 			$currentServer = $this->addressHandler->generateRemoteURL();
 			if ($this->addressHandler->compareAddresses($user, $remote, $owner, $currentServer)) {
-				return new Result(null, Http::STATUS_FORBIDDEN);
+				throw new InvalidShareException();
 			}
 
-			// check if re-sharing is allowed
-			if (!$share->getPermissions() | ~Constants::PERMISSION_SHARE) {
-				return new Result(null, Http::STATUS_BAD_REQUEST);
+			$reSharingAllowed = $share->getPermissions() & Constants::PERMISSION_SHARE;
+			if (!$reSharingAllowed) {
+				throw new \Exception();
 			}
-			$share->setPermissions($share->getPermissions() & $permission);
-			// the recipient of the initial share is now the initiator for the re-share
-			$share->setSharedBy($share->getSharedWith());
-			$share->setSharedWith($shareWith);
-
-			$result = $this->federatedShareProvider->create($share);
-			$this->federatedShareProvider->storeRemoteId((int)$result->getId(), $remoteId);
+			$result = $this->fedShareManager->reShare(
+				$share,
+				$remoteId,
+				$shareWith,
+				$permission
+			);
 		} catch (Share\Exceptions\ShareNotFound $e) {
 			return new Result(null, Http::STATUS_NOT_FOUND);
-		} catch (Exception\InvalidShareException $e) {
+		} catch (InvalidShareException $e) {
 			return new Result(null, Http::STATUS_FORBIDDEN);
 		} catch (\Exception $e) {
 			return new Result(null, Http::STATUS_BAD_REQUEST);
 		}
 
-		return new Result(['token' => $result->getToken(), 'remoteId' => $result->getId()]);
+		return new Result(
+			[
+				'token' => $result->getToken(),
+				'remoteId' => $result->getId()
+			]
+		);
 	}
 
 	/**
-	 * accept server-to-server share
+	 * Accept server-to-server share
 	 *
 	 * @param array $params
 	 *
@@ -291,8 +264,12 @@ class RequestHandler {
 				$remoteId = $this->federatedShareProvider->getRemoteId($share);
 				$this->notifications->sendAcceptShare($remote, $remoteId, $share->getToken());
 			}
-		} catch (Exception\NotSupportedException $e) {
-			return new Result(null, 503, 'Server does not support federated cloud sharing');
+		} catch (NotSupportedException $e) {
+			return new Result(
+				null,
+				Http::STATUS_SERVICE_UNAVAILABLE,
+				'Server does not support federated cloud sharing'
+			);
 		} catch (\Exception $e) {
 			// pass
 		}
@@ -300,9 +277,10 @@ class RequestHandler {
 	}
 
 	/**
-	 * decline server-to-server share
+	 * Decline server-to-server share
 	 *
 	 * @param array $params
+	 *
 	 * @return Result
 	 */
 	public function declineShare($params) {
@@ -317,8 +295,12 @@ class RequestHandler {
 				$this->notifications->sendDeclineShare($remote, $remoteId, $share->getToken());
 			}
 			$this->fedShareManager->declineShare($share);
-		} catch (Exception\NotSupportedException $e) {
-			return new Result(null, 503, 'Server does not support federated cloud sharing');
+		} catch (NotSupportedException $e) {
+			return new Result(
+				null,
+				Http::STATUS_SERVICE_UNAVAILABLE,
+				'Server does not support federated cloud sharing'
+			);
 		} catch (\Exception $e) {
 			// pass
 		}
@@ -327,9 +309,10 @@ class RequestHandler {
 	}
 
 	/**
-	 * remove server-to-server share if it was unshared by the owner
+	 * Remove server-to-server share if it was unshared by the owner
 	 *
 	 * @param array $params
+	 *
 	 * @return Result
 	 */
 	public function unshare($params) {
@@ -339,39 +322,30 @@ class RequestHandler {
 			$id = $params['id'];
 			$token = isset($_POST['token']) ? $_POST['token'] : null;
 
-			$query = \OCP\DB::prepare('SELECT * FROM `*PREFIX*share_external` WHERE `remote_id` = ? AND `share_token` = ?');
-			$query->execute([$id, $token]);
-			$share = $query->fetchRow();
+			$query = $this->connection->getQueryBuilder();
+			$query->select('*')->from('share_external')
+				->where(
+					$query->expr()->eq(
+						'remote_id', $query->createNamedParameter($id)
+					)
+				)
+				->andWhere(
+					$query->expr()->eq(
+						'share_token',
+						$query->createNamedParameter($token)
+					)
+				);
+			$shareRow = $query->execute()->fetch();
 
-			if ($token && $id && !empty($share)) {
-				$remote = $this->cleanupRemote($share['remote']);
-
-				$owner = $share['owner'] . '@' . $remote;
-				$mountpoint = $share['mountpoint'];
-				$user = $share['user'];
-
-				$query = \OCP\DB::prepare('DELETE FROM `*PREFIX*share_external` WHERE `remote_id` = ? AND `share_token` = ?');
-				$query->execute([$id, $token]);
-
-				if ($share['accepted']) {
-					$path = \trim($mountpoint, '/');
-				} else {
-					$path = \trim($share['name'], '/');
-				}
-
-				$notificationManager = \OC::$server->getNotificationManager();
-				$notification = $notificationManager->createNotification();
-				$notification->setApp('files_sharing')
-					->setUser($share['user'])
-					->setObject('remote_share', (int) $share['id']);
-				$notificationManager->markProcessed($notification);
-
-				\OC::$server->getActivityManager()->publishActivity(
-					Activity::FILES_SHARING_APP, Activity::SUBJECT_REMOTE_SHARE_UNSHARED, [$owner, $path], '', [],
-					'', '', $user, Activity::TYPE_REMOTE_SHARE, Activity::PRIORITY_MEDIUM);
+			if ($token && $id && $shareRow !== false) {
+				$this->fedShareManager->unshare($shareRow);
 			}
-		} catch (Exception\NotSupportedException $e) {
-			return new Result(null, 503, 'Server does not support federated cloud sharing');
+		} catch (NotSupportedException $e) {
+			return new Result(
+				null,
+				Http::STATUS_SERVICE_UNAVAILABLE,
+				'Server does not support federated cloud sharing'
+			);
 		} catch (\Exception $e) {
 			// pass
 		}
@@ -380,9 +354,9 @@ class RequestHandler {
 	}
 
 	/**
-	 * federated share was revoked, either by the owner or the re-sharer
+	 * Federated share was revoked, either by the owner or the re-sharer
 	 *
-	 * @param $params
+	 * @param array $params
 	 *
 	 * @return Result
 	 */
@@ -390,7 +364,7 @@ class RequestHandler {
 		try {
 			$id = (int)$params['id'];
 			$share = $this->getValidShare($id);
-			$this->federatedShareProvider->removeShareFromTable($share);
+			$this->fedShareManager->revoke($share);
 		} catch (\Exception $e) {
 			return new Result(null, Http::STATUS_BAD_REQUEST);
 		}
@@ -399,7 +373,7 @@ class RequestHandler {
 	}
 
 	/**
-	 * update share information to keep federated re-shares in sync
+	 * Update share information to keep federated re-shares in sync
 	 *
 	 * @param array $params
 	 *
@@ -413,60 +387,14 @@ class RequestHandler {
 			$share = $this->getValidShare($id);
 			$validPermission = \ctype_digit($permissions);
 			if (!$validPermission) {
-				return new Result(null, Http::STATUS_BAD_REQUEST);
+				throw new \Exception();
 			}
-			$this->updatePermissionsInDatabase($share, (int)$permissions);
-		} catch (Share\Exceptions\ShareNotFound $e) {
-			return new Result(null, Http::STATUS_BAD_REQUEST);
+			$this->fedShareManager->updatePermissions($share, (int)$permissions);
 		} catch (\Exception $e) {
 			return new Result(null, Http::STATUS_BAD_REQUEST);
 		}
 
 		return new Result();
-	}
-
-	private function cleanupRemote($remote) {
-		$remote = \substr($remote, \strpos($remote, '://') + 3);
-
-		return \rtrim($remote, '/');
-	}
-	
-	/**
-	 * get share
-	 *
-	 * @param int $id
-	 * @param string $token
-	 *
-	 * @return array|bool
-	 */
-	protected function getShare($id, $token) {
-		$query = $this->connection->getQueryBuilder();
-		$query->select('*')->from($this->shareTable)
-			->where($query->expr()->eq('token', $query->createNamedParameter($token)))
-			->andWhere($query->expr()->eq('share_type', $query->createNamedParameter(FederatedShareProvider::SHARE_TYPE_REMOTE)))
-			->andWhere($query->expr()->eq('id', $query->createNamedParameter($id)));
-
-		$result = $query->execute()->fetchAll();
-
-		if (!empty($result) && isset($result[0])) {
-			return $result[0];
-		}
-
-		return false;
-	}
-
-	/**
-	 * update permissions in database
-	 *
-	 * @param IShare $share
-	 * @param int $permissions
-	 */
-	protected function updatePermissionsInDatabase(IShare $share, $permissions) {
-		$query = $this->connection->getQueryBuilder();
-		$query->update('share')
-			->where($query->expr()->eq('id', $query->createNamedParameter($share->getId())))
-			->set('permissions', $query->createNamedParameter($permissions))
-			->execute();
 	}
 
 	/**
@@ -492,16 +420,15 @@ class RequestHandler {
 	 * @return IShare
 	 *
 	 * @throws Share\Exceptions\ShareNotFound
-	 * @throws Exception\InvalidShareException
+	 * @throws InvalidShareException
 	 */
 	protected function getValidShare($id) {
 		$share = $this->federatedShareProvider->getShareById($id);
 		$token = $this->request->getParam('token', null);
-		if (
-			$share->getShareType() !== FederatedShareProvider::SHARE_TYPE_REMOTE
+		if ($share->getShareType() !== FederatedShareProvider::SHARE_TYPE_REMOTE
 			|| $share->getToken() !== $token
 		) {
-			throw new Exception\InvalidShareException();
+			throw new InvalidShareException();
 		}
 		return $share;
 	}
@@ -509,26 +436,30 @@ class RequestHandler {
 	/**
 	 * Make sure that incoming shares are supported
 	 *
-	 * @throws Exception\NotSupportedException
+	 * @return void
+	 *
+	 * @throws NotSupportedException
 	 */
 	protected function assertIncomingSharingEnabled() {
-		if (!(\OCP\App::isEnabled('files_sharing')
-			&& $this->federatedShareProvider->isIncomingServer2serverShareEnabled())
+		if (!$this->appManager->isEnabledForUser('files_sharing')
+			|| !$this->federatedShareProvider->isIncomingServer2serverShareEnabled()
 		) {
-			throw new Exception\NotSupportedException();
+			throw new NotSupportedException();
 		}
 	}
 
 	/**
 	 * Make sure that outgoing shares are supported
 	 *
-	 * @throws Exception\NotSupportedException
+	 * @return void
+	 *
+	 * @throws NotSupportedException
 	 */
 	protected function assertOutgoingSharingEnabled() {
-		if (!(\OCP\App::isEnabled('files_sharing')
-			&& $this->federatedShareProvider->isOutgoingServer2serverShareEnabled())
+		if (!$this->appManager->isEnabledForUser('files_sharing')
+			|| !$this->federatedShareProvider->isOutgoingServer2serverShareEnabled()
 		) {
-			throw new Exception\NotSupportedException();
+			throw new NotSupportedException();
 		}
 	}
 }

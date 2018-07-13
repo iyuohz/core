@@ -98,12 +98,12 @@ if (\OC::$server->getAppManager()->isEnabledForUser('files_sharing')) {
 	$s2s = new OCA\FederatedFileSharing\RequestHandler(
 		$federatedSharingApp->getFederatedShareProvider(),
 		\OC::$server->getDatabaseConnection(),
-		\OC::$server->getShareManager(),
+		\OC::$server->getAppManager(),
+		\OC::$server->getUserManager(),
 		\OC::$server->getRequest(),
 		$notification,
 		$addressHandler,
-		$federatedSharingApp->getFederatedShareManager(),
-		\OC::$server->getEventDispatcher()
+		$federatedSharingApp->getFederatedShareManager()
 	);
 	API::register('post',
 		'/cloud/shares',
