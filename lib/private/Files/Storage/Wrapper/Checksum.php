@@ -20,10 +20,6 @@
  */
 namespace OC\Files\Storage\Wrapper;
 
-use Icewind\Streams\CallbackWrapper;
-use OC\Files\Stream\Checksum as ChecksumStream;
-use OCP\Files\IHomeStorage;
-
 /**
  * Class Checksum
  *
@@ -47,116 +43,22 @@ class Checksum extends Wrapper {
 	const PATH_IN_CACHE_WITHOUT_CHECKSUM = 2;
 
 	/** @var array */
-	private $pathsInCacheWithoutChecksum = [];
-
-	/**
-	 * @param string $path
-	 * @param string $mode
-	 * @return false|resource
-	 */
-	public function fopen($path, $mode) {
-		$stream = $this->getWrapperStorage()->fopen($path, $mode);
-		if (!\is_resource($stream) || $this->isReadWriteStream($mode)) {
-			// don't wrap on error or mixed mode streams (could cause checksum corruption)
-			return $stream;
-		}
-
-		$requirement = $this->getChecksumRequirement($path, $mode);
-
-		if ($requirement === self::PATH_NEW_OR_UPDATED) {
-			return \OC\Files\Stream\Checksum::wrap($stream, $path);
-		}
-
-		// If file is without checksum we save the path and create
-		// a callback because we can only calculate the checksum
-		// after the client has read the entire filestream once.
-		// the checksum is then saved to oc_filecache for subsequent
-		// retrieval (see onClose())
-		if ($requirement == self::PATH_IN_CACHE_WITHOUT_CHECKSUM) {
-			$checksumStream = \OC\Files\Stream\Checksum::wrap($stream, $path);
-			return CallbackWrapper::wrap(
-				$checksumStream,
-				null,
-				null,
-				[$this, 'onClose']
-			);
-		}
-
-		return $stream;
-	}
-
-	/**
-	 * @param $mode
-	 * @param $path
-	 * @return int
-	 */
-	private function getChecksumRequirement($path, $mode) {
-		$isNormalFile = true;
-		if ($this->instanceOfStorage(IHomeStorage::class)) {
-			// home storage stores files in "files"
-			$isNormalFile = \substr($path, 0, 6) === 'files/';
-		}
-		$fileIsWritten = $mode !== 'r' && $mode !== 'rb';
-
-		if ($isNormalFile && $fileIsWritten) {
-			return self::PATH_NEW_OR_UPDATED;
-		}
-
-		// file could be in cache but without checksum for example
-		// if mounted from ext. storage
-		$cache = $this->getCache($path);
-
-		$cacheEntry = $cache->get($path);
-
-		// Cache entry is sometimes an array (partial) when encryption is enabled without id so
-		// we ignore it.
-		if ($cacheEntry && empty($cacheEntry['checksum']) && \is_object($cacheEntry)) {
-			$this->pathsInCacheWithoutChecksum[$cacheEntry->getId()] = $path;
-			return self::PATH_IN_CACHE_WITHOUT_CHECKSUM;
-		}
-
-		return self::NOT_REQUIRED;
-	}
-
-	/**
-	 * @param $mode
-	 * @return bool
-	 */
-	private function isReadWriteStream($mode) {
-		return \strpos($mode, '+') !== false;
-	}
-
-	/**
-	 * Callback registered in fopen
-	 */
-	public function onClose() {
-		$cache = $this->getCache();
-		foreach ($this->pathsInCacheWithoutChecksum as $cacheId => $path) {
-			$cache->update(
-				$cacheId,
-				['checksum' => self::getChecksumsInDbFormat($path)]
-			);
-		}
-
-		$this->pathsInCacheWithoutChecksum = [];
-	}
+	private $checksums;
 
 	/**
 	 * @param $path
 	 * @return string Format like "SHA1:abc MD5:def ADLER32:ghi"
 	 */
-	private static function getChecksumsInDbFormat($path) {
-		$checksums = ChecksumStream::getChecksums($path);
-
-		if (empty($checksums)) {
+	private function getChecksumsInDbFormat($path) {
+		if (empty($this->checksums[$path])) {
 			return '';
 		}
 
 		return \sprintf(
 			self::CHECKSUMS_DB_FORMAT,
-			$checksums['sha1'],
-			$checksums['md5'],
-			$checksums['adler32']
+			$this->checksums[$path]->sha1,
+			$this->checksums[$path]->md5,
+			$this->checksums[$path]->adler32
 		);
 	}
 
@@ -178,17 +80,22 @@ class Checksum extends Wrapper {
 
 	/**
 	 * @param string $path
-	 * @param string $data
+	 * @param resource $data
 	 * @return bool
 	 */
 	public function file_put_contents($path, $data) {
-		$memoryStream = \fopen('php://memory', 'r+');
-		$checksumStream = \OC\Files\Stream\Checksum::wrap($memoryStream, $path);
+		if (!\is_resource($data)) {
+			throw new \InvalidArgumentException();
+		}
 
-		\fwrite($checksumStream, $data);
-		\fclose($checksumStream);
+		$this->checksums[$path] = new \stdClass();
+		// TODO: perform register more globally
+		\stream_filter_register('oc.checksum', ChecksumFilter::class);
+		\stream_filter_append($data, 'oc.checksum', STREAM_FILTER_READ, $this->checksums[$path]);
 
-		return $this->getWrapperStorage()->file_put_contents($path, $data);
+		$return = $this->getWrapperStorage()->file_put_contents($path, $data);
+		\fclose($data);
+		return $return;
 	}
 
 	/**
@@ -205,7 +112,7 @@ class Checksum extends Wrapper {
 				return null;
 			}
 		}
-		$parentMetaData['checksum'] = self::getChecksumsInDbFormat($path);
+		$parentMetaData['checksum'] = $this->getChecksumsInDbFormat($path);
 
 		if (!isset($parentMetaData['mimetype'])) {
 			$parentMetaData['mimetype'] = 'application/octet-stream';
