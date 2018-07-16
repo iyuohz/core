@@ -75,54 +75,24 @@ class File extends Node implements \OCP\Files\File, IPreviewNode {
 	 * @param string $mode
 	 * @return resource
 	 * @throws \OCP\Files\NotPermittedException
+	 * @deprecated 11.0.0
 	 */
 	public function fopen($mode) {
-		$preHooks = [];
-		$postHooks = [];
-		$requiredPermissions = \OCP\Constants::PERMISSION_READ;
-		switch ($mode) {
-			case 'r+':
-			case 'rb+':
-			case 'w+':
-			case 'wb+':
-			case 'x+':
-			case 'xb+':
-			case 'a+':
-			case 'ab+':
-			case 'w':
-			case 'wb':
-			case 'x':
-			case 'xb':
-			case 'a':
-			case 'ab':
-				$preHooks[] = 'preWrite';
-				$postHooks[] = 'postWrite';
-				$requiredPermissions |= \OCP\Constants::PERMISSION_UPDATE;
-				break;
-		}
-
-		if ($this->checkPermissions($requiredPermissions)) {
-			$this->sendHooks($preHooks);
-			$result = $this->view->fopen($this->path, $mode);
-			$this->sendHooks($postHooks);
-			return $result;
-		} else {
-			throw new NotPermittedException();
-		}
+		throw new \BadMethodCallException('fopen is no longer allowed to be called');
 	}
 
 	public function delete() {
-		if ($this->checkPermissions(\OCP\Constants::PERMISSION_DELETE)) {
-			$this->sendHooks(['preDelete']);
-			$fileInfo = $this->getFileInfo();
-			$this->view->unlink($this->path);
-			$nonExisting = new NonExistingFile($this->root, $this->view, $this->path, $fileInfo);
-			$this->root->emit('\OC\Files', 'postDelete', [$nonExisting]);
-			$this->exists = false;
-			$this->fileInfo = null;
-		} else {
+		if (!$this->checkPermissions(\OCP\Constants::PERMISSION_DELETE)) {
 			throw new NotPermittedException();
 		}
+
+		$this->sendHooks(['preDelete']);
+		$fileInfo = $this->getFileInfo();
+		$this->view->unlink($this->path);
+		$nonExisting = new NonExistingFile($this->root, $this->view, $this->path, $fileInfo);
+		$this->root->emit('\OC\Files', 'postDelete', [$nonExisting]);
+		$this->exists = false;
+		$this->fileInfo = null;
 	}
 
 	/**

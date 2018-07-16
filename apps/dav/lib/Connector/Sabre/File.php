@@ -33,6 +33,7 @@
 
 namespace OCA\DAV\Connector\Sabre;
 
+use function GuzzleHttp\Psr7\stream_for;
 use OC\AppFramework\Http\Request;
 use OC\Files\Filesystem;
 use OC\Files\Storage\Storage;
@@ -186,8 +187,10 @@ class File extends Node implements IFile, IFileNode {
 		/** @var Storage $storage */
 		list($storage, $internalPath) = $this->fileView->resolvePath($this->path);
 		try {
-			$result = $partStorage->file_put_contents($internalPartPath, $data);
-			\fclose($data);
+			if ($internalPartPath === null) {
+				throw new \OCA\DAV\Connector\Sabre\Exception\Forbidden('No access');
+			}
+			$result = $partStorage->writeFile($internalPartPath, stream_for($data));
 			if ($result === false) {
 				throw new Exception('Error while writing content to target location');
 			}
@@ -374,11 +377,11 @@ class File extends Node implements IFile, IFileNode {
 				// do a if the file did not exist
 				throw new NotFound();
 			}
-			$res = $this->fileView->fopen($viewPath, 'rb');
+			$res = $this->fileView->readFile($viewPath);
 			if ($res === false) {
 				throw new ServiceUnavailable('Could not open file');
 			}
-			return $res;
+			return $res->detach();
 		} catch (GenericEncryptionException $e) {
 			// returning 403 because some apps stops syncing if 503 is returned.
 			throw new Forbidden('Encryption not ready: ' . $e->getMessage());

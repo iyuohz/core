@@ -30,6 +30,7 @@ use OCP\Files\InvalidPathException;
 use OCP\Files\Storage\ILockingStorage;
 use OCP\Files\Storage\IStorage;
 use OCP\Lock\ILockingProvider;
+use Psr\Http\Message\StreamInterface;
 
 class Wrapper implements \OC\Files\Storage\Storage, ILockingStorage {
 	/**
@@ -613,5 +614,25 @@ class Wrapper implements \OC\Files\Storage\Storage, ILockingStorage {
 		if ($storage->instanceOfStorage('\OCP\Files\Storage\ILockingStorage')) {
 			$storage->changeLock($path, $type, $provider);
 		}
+	}
+
+	/**
+	 * @param string $path
+	 * @param array $options
+	 * @return StreamInterface
+	 * @since 11.0.0
+	 */
+	public function readFile(string $path, array $options = []): StreamInterface {
+		return $this->getWrapperStorage()->readFile($path, $options);
+	}
+
+	/**
+	 * @param string $path
+	 * @param StreamInterface $stream
+	 * @return int
+	 * @since 11.0.0
+	 */
+	public function writeFile(string $path, StreamInterface $stream): int {
+		return $this->getWrapperStorage()->writeFile($path, $stream);
 	}
 }

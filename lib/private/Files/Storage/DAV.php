@@ -35,6 +35,7 @@ namespace OC\Files\Storage;
 use Exception;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Message\ResponseInterface;
+use function GuzzleHttp\Psr7\stream_for;
 use OC\Files\Filesystem;
 use OC\Files\Stream\Close;
 use Icewind\Streams\IteratorDirectory;
@@ -45,6 +46,7 @@ use OCP\Files\FileInfo;
 use OCP\Files\StorageInvalidException;
 use OCP\Files\StorageNotAvailableException;
 use OCP\Util;
+use Psr\Http\Message\StreamInterface;
 use Sabre\DAV\Xml\Property\ResourceType;
 use Sabre\HTTP\Client;
 use Sabre\HTTP\ClientHttpException;
@@ -869,5 +871,41 @@ class DAV extends Common {
 				throw new Forbidden('Forbidden');
 		}
 		throw new StorageNotAvailableException(\get_class($e) . ': ' . $e->getMessage());
+	}
+
+	/**
+	 * @param string $path
+	 * @param array $options
+	 * @return StreamInterface
+	 * @since 11.0.0
+	 */
+	public function readFile(string $path, array $options = []): StreamInterface {
+		$response = $this->httpClientService
+			->newClient()
+			->get($this->createBaseUri() . $this->encodePath($path), [
+				'auth' => [$this->user, $this->password],
+				'stream' => true
+			]);
+		return stream_for($response->getBody());
+	}
+
+	/**
+	 * @param string $path
+	 * @param StreamInterface $stream
+	 * @return int
+	 * @since 11.0.0
+	 */
+	public function writeFile(string $path, StreamInterface $stream): int {
+		try {
+			$this->httpClientService
+				->newClient()
+				->put($this->createBaseUri() . $this->encodePath($path), [
+					'body' => $stream->detach(),
+					'auth' => [$this->user, $this->password]
+				]);
+			return $stream->getSize();
+		} catch (\Exception $e) {
+			$this->convertException($e);
+		}
 	}
 }

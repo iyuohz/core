@@ -309,7 +309,7 @@ class FileTest extends TestCase {
 		});
 		// setup
 		$storage = $this->getMockBuilder(Local::class)
-			->setMethods(['fopen'])
+			->setMethods(['writeFile'])
 			->setConstructorArgs([['datadir' => \OC::$server->getTempManager()->getTemporaryFolder()]])
 			->getMock();
 		Filesystem::mount($storage, [], $this->user . '/');
